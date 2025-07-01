@@ -8,7 +8,7 @@ def conectar():
         return oracledb.connect(
             user="system",
             password="Atom", 
-            dsn="localhost:1521/XE"
+            dsn="192.168.1.20:1521/XE"
         )
     except Exception as e:
         print(f"Error conectando a la base de datos: {e}")
@@ -182,39 +182,74 @@ def preguntar_volver_menu():
 # Funciones del menú
 def crear_cuenta(usuarios):
     print("=== CREAR CUENTA ===")
-    datos = ["primer nombre", "segundo nombre", "apellido paterno", "apellido materno", "clave", "rut"]
-    valores = []
     
-    for dato in datos:
-        valor = input(f"Ingrese {dato}: ").strip()
-        valores.append(valor)
+    # Pedir los datos en el orden correcto para la función insertar_usuario
+    rut = input("Ingrese rut: ").strip()
+    nombre = input("Ingrese primer nombre: ").strip()
+    segundo_nombre = input("Ingrese segundo nombre: ").strip()
+    apellido_p = input("Ingrese apellido paterno: ").strip()
+    apellido_m = input("Ingrese apellido materno: ").strip()
+    clave = input("Ingrese clave: ").strip()
     
-    rut = valores[-1]
     if rut in usuarios:
         print("El usuario ya existe.")
-        return
+        return False
     
-    if insertar_usuario(*valores):
+    if insertar_usuario(rut, nombre, segundo_nombre, apellido_p, apellido_m, clave):
         usuarios[rut] = {
-            "nombre": valores[0],
-            "segundo_nombre": valores[1],
-            "apellido_p": valores[2],
-            "apellido_m": valores[3],
-            "clave": valores[4]
+            "nombre": nombre,
+            "segundo_nombre": segundo_nombre,
+            "apellido_p": apellido_p,
+            "apellido_m": apellido_m,
+            "clave": clave
         }
         print("Usuario creado exitosamente.")
+        return True
     else:
         print("Error al crear el usuario.")
+        return False
 
 def iniciar_sesion(usuarios):
     print("=== INICIAR SESIÓN ===")
+    
     rut = input("Ingrese su rut: ").strip()
     clave = input("Ingrese su clave: ")
     
-    if rut in usuarios and usuarios[rut]["clave"] == clave:
-        print(f"Bienvenido {usuarios[rut]['nombre']} de nuevo!")
+    # Verificar primero si el usuario existe en la base de datos
+    conn = conectar()
+    usuario_encontrado = None
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT rut, nombre, clave FROM usuarios_barber WHERE rut = :1", [rut])
+            usuario_encontrado = cursor.fetchone()
+            cursor.close()
+        except Exception as e:
+            print(f"Error verificando usuario en BD: {e}")
+        finally:
+            conn.close()
+    
+    if not usuario_encontrado:
+        print(f"El RUT '{rut}' no está registrado en la base de datos.")
+        print("Por favor, cree una cuenta primero (opción 1) o verifique que el RUT esté correcto.")
+        return False
+    
+    # Si existe en BD, verificar la clave
+    rut_bd, nombre_bd, clave_bd = usuario_encontrado
+    if clave == clave_bd:
+        print(f"Bienvenido {nombre_bd} de nuevo!")
+        print("Sesión iniciada correctamente.")
+        
+        # Actualizar el diccionario local si no está sincronizado
+        if rut not in usuarios:
+            print("Sincronizando datos locales...")
+            # Recargar todos los usuarios
+            usuarios.update(cargar_usuarios())
+        
+        return True
     else:
-        print("Rut o clave incorrectos.")
+        print("La clave es incorrecta.")
+        return False
 
 def ingreso_colaboradores(colaboradores):
     print("=== INGRESO COLABORADORES ===")
@@ -279,6 +314,25 @@ def agendar_cita(usuarios, colaboradores):
         print("Debe crear una cuenta primero.")
         return
     
+    # Verificar que el usuario existe en la base de datos también
+    conn = conectar()
+    if conn:
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM usuarios_barber WHERE rut = :1", [rut])
+            if cursor.fetchone()[0] == 0:
+                print("Error: El usuario no existe en la base de datos. Por favor, cree una cuenta primero.")
+                cursor.close()
+                conn.close()
+                return
+            cursor.close()
+        except Exception as e:
+            print(f"Error verificando usuario: {e}")
+            conn.close()
+            return
+        finally:
+            conn.close()
+    
     bar = input(f"{usuarios[rut]['nombre']}, ¿con qué colaborador desea agendar? ({'/'.join(colaboradores.keys())}): ")
     if bar not in colaboradores:
         print("Colaborador inválido.")
@@ -338,6 +392,27 @@ def atencion_cliente():
     else:
         print("Error al registrar su consulta.")
 
+def actualizar_datos_sistema(usuarios, colaboradores):
+    """Recarga todos los datos desde la base de datos"""
+    print("Actualizando datos del sistema desde la base de datos...")
+    
+    # Limpiar datos actuales en memoria
+    usuarios.clear()
+    for colab in colaboradores:
+        colaboradores[colab]["horario"].clear()
+    
+    # Recargar desde la base de datos
+    nuevos_usuarios = cargar_usuarios()
+    usuarios.update(nuevos_usuarios)
+    
+    nuevos_colaboradores = cargar_colaboradores()
+    colaboradores.update(nuevos_colaboradores)
+    
+    cargar_horarios(colaboradores)
+    
+    print(f"Datos actualizados: {len(usuarios)} usuarios cargados.")
+    return usuarios, colaboradores
+
 # Programa principal
 def main():
     # Cargar datos iniciales
@@ -347,22 +422,28 @@ def main():
     
     while True:
         print("\n" + "="*40)
-        print("        BARBERÍA - SISTEMA DE CITAS")
+        print(" BARBERÍA - SISTEMA DE CITAS")
         print("="*40)
         print("1- Crear cuenta")
         print("2- Iniciar sesión")
         print("3- Ingreso de colaboradores")
         print("4- Agenda")
         print("5- Atención al cliente")
-        print("6- Salir")
+        print("6- Actualizar datos del sistema")
+        print("7- Salir")
         print("="*40)
-        
-        opcion = input("Ingrese una opción: ").strip()
+        print("Ingrese una opción: ")
+        opcion = input().strip()
         
         if opcion == "1":
-            crear_cuenta(usuarios)
+            if crear_cuenta(usuarios):
+                # Recargar usuarios después de crear una cuenta nueva
+                print("Actualizando datos...")
+                usuarios = cargar_usuarios()
+            input("Presione Enter para continuar...")
         elif opcion == "2":
-            iniciar_sesion(usuarios)
+            if iniciar_sesion(usuarios):
+                input("Presione Enter para continuar...")
         elif opcion == "3":
             ingreso_colaboradores(colaboradores)
             if not preguntar_volver_menu():
@@ -376,6 +457,9 @@ def main():
             if not preguntar_volver_menu():
                 continue
         elif opcion == "6":
+            usuarios, colaboradores = actualizar_datos_sistema(usuarios, colaboradores)
+            input("Presione Enter para continuar...")
+        elif opcion == "7":
             print("¡Hasta luego!")
             break
         else:
